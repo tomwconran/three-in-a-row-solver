@@ -3,10 +3,12 @@
 #include <bit>
 #include <bitset>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <ios>
 #include <iostream>
 #include <ostream>
@@ -352,18 +354,37 @@ private:
 
   struct CellBlock {
     int n{};
+    int lCell{};
+    int rCell{};
+    int crossEnds{};
+    int naughtEnds{};
     int crosses{};
     int naughts{};
+
+    explicit CellBlock(int pn, int plCell, int prCell)
+        : n{pn}, lCell{plCell}, rCell{prCell} {
+      crossEnds = (lCell == 1 ? 1 : 0) + (rCell == 1 ? 1 : 0);
+      naughtEnds = (lCell == 0 ? 1 : 0) + (rCell == 0 ? 1 : 0);
+      crosses = (n + naughtEnds) / 3;
+      naughts = (n + crossEnds) / 3;
+    }
   };
+
+  static board_t perfectMask(int n) {
+    board_t mask{};
+    for (int i{0}; i < n; ++i) {
+      mask <<= 1;
+      mask |= 1;
+      mask <<= 2;
+    }
+    return mask;
+  }
 
   static bool requiredCells(Game &g, placed_t &placed) {
     bool progress{false};
     const board_t boardMask{g.boardMask()};
 
-    const auto countRequired = [](int n, int crossEnds, int naughtEnds) {
-      return CellBlock{n, (n + naughtEnds) / 3, (n + crossEnds) / 3};
-    };
-    const auto check = [&g, &placed, &countRequired,
+    const auto check = [&g, &placed,
                         boardMask](const int i, const board_t cells,
                                    const board_t mask, const bool transposed) {
       if (g.isRowComplete(cells, mask))
@@ -381,30 +402,52 @@ private:
         }
         int n{std::countr_zero(gaps)};
         int p{std::countl_zero(gaps)};
-        int l{static_cast<int>(p == 0 ? -1 : (cells >> (p - 1)) & 1)};
-        int r{
+        CellBlock b{
+            n, static_cast<int>(p == 0 ? -1 : (cells >> (p - 1)) & 1),
             static_cast<int>(p + 1 == g.size() ? -1 : (cells >> (p + n)) & 1)};
-        auto required{countRequired(n, (l == 1 ? 1 : 0) + (r == 1 ? 1 : 0),
-                                    (l == 0 ? 1 : 0) + (r == 0 ? 1 : 0))};
-        count.first += required.crosses;
-        count.second += required.naughts;
+        count.first += b.crosses;
+        count.second += b.naughts;
 
-        blocks.push_back({p, required});
+        blocks.push_back({p, b});
         gaps >>= n;
       }
       board_t crosses{};
       board_t naughts{};
 
       if (count.first == half) {
+        bool placed{false};
         for (auto b : blocks) {
           if (b.second.crosses == 0) {
+            placed = true;
             naughts |= ((board_t{1} << b.second.n) - 1) << b.first;
           }
         }
+        if (!placed) {
+          for (auto b : blocks) {
+            board_t m{perfectMask(b.second.crosses)};
+            if (b.second.crossEnds == 2 && (b.second.n + 1) % 3 == 0) {
+              crosses |= m << b.first;
+            } else if (b.second.crossEnds == 1 && (b.second.n + 2) % 3 == 0) {
+              crosses |= (m >> (b.second.rCell == 1 ? 1 : 0)) << b.first;
+            }
+          }
+        }
       } else if (count.second == half) {
+        bool placed{false};
         for (auto b : blocks) {
+          placed = true;
           if (b.second.naughts == 0) {
             crosses |= ((board_t{1} << b.second.n) - 1) << b.first;
+          }
+        }
+        if (!placed) {
+          for (auto b : blocks) {
+            board_t m{perfectMask(b.second.crosses)};
+            if (b.second.naughtEnds == 2 && (b.second.n + 1) % 3 == 0) {
+              naughts |= m << b.first;
+            } else if (b.second.naughtEnds == 1 && (b.second.n + 2) % 3 == 0) {
+              naughts |= (m >> (b.second.rCell == 0 ? 1 : 0)) << b.first;
+            }
           }
         }
       } else
@@ -518,10 +561,21 @@ int main(int argc, char const *argv[]) {
   //           << "\nCalls: " << bs.calls() << '\n'
   //           << g1 << '\n';
 
+  DeductiveSolver ds{};
+  ds.deduce(g1);
+  std::cout << g1 << '\n';
+  auto start = std::chrono::steady_clock::now();
   HybridSolver hs{};
   std::cout << "HybridSolver: " << std::boolalpha << hs.solve(g2)
             << "\nCalls: " << hs.calls() << '\n'
             << g2 << '\n';
+
+  auto end = std::chrono::steady_clock::now();
+  std::cout << "Time: " << std::fixed << std::setprecision(6)
+            << std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+                       .count() /
+                   1'000'000.0
+            << "ms\n";
 
   return 0;
 }
