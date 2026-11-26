@@ -1,13 +1,14 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <bitset>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <iterator>
 #include <ostream>
 #include <stdexcept>
 #include <utility>
@@ -66,12 +67,14 @@ public:
 
   explicit Game(int size) : m_size{size} {}
 
-  bool isRowValid(board_t row) const {
-    return !((row & row >> 1 & row >> 2) || std::popcount(row) > m_size / 2);
+  bool isRowValid(board_t row, board_t rowMask) const {
+    return !((row & (row >> 1) & (row >> 2)) ||
+             std::popcount(row) > m_size / 2 ||
+             std::popcount(rowMask) - std::popcount(row) > m_size / 2);
   }
 
-  bool isRowComplete(board_t row, board_t rowm_mask) const {
-    return std::popcount(rowm_mask) == m_size &&
+  bool isRowComplete(board_t row, board_t rowMask) const {
+    return isRowValid(row, rowMask) && std::popcount(rowMask) == m_size &&
            std::popcount(row) == m_size / 2;
   }
 
@@ -107,13 +110,13 @@ public:
 
   bool isValid() const {
     for (std::size_t i{0}; i < static_cast<size_t>(m_size); ++i) {
-      if (!isRowValid(m_cells[i]))
+      if (!isRowValid(m_cells[i], m_mask[i]))
         return false;
-      if (!isRowValid(~m_cells[i] & m_mask[i]))
+      if (!isRowValid(~m_cells[i] & m_mask[i], m_mask[i]))
         return false;
-      if (!isRowValid(m_cellsT[i]))
+      if (!isRowValid(m_cellsT[i], m_maskT[i]))
         return false;
-      if (!isRowValid(~m_cellsT[i] & m_maskT[i]))
+      if (!isRowValid(~m_cellsT[i] & m_maskT[i], m_maskT[i]))
         return false;
     }
     return true;
@@ -214,9 +217,15 @@ using placed_t = std::vector<std::pair<int, int>>;
 
 class DeductiveSolver {
 public:
+  enum class Status {
+    Stuck,
+    Success,
+    Contradiction,
+  };
+
   DeductiveSolver() = default;
 
-  static placed_t deduce(Game &g) {
+  static std::pair<Status, placed_t> deduce(Game &g) {
     placed_t placed{};
     bool progress{true};
     while (progress) {
@@ -227,13 +236,16 @@ public:
           break;
         }
       }
+      if (!g.isValid()) {
+        return {Status::Contradiction, placed};
+      }
     }
-    return placed;
+    return {g.isWon() ? Status::Success : Status::Stuck, placed};
   }
 
 private:
-  static void markPairs(Game &g, placed_t &placed, int i, board_t cells,
-                        bool crosses, bool transposed) {
+  static void mark(Game &g, placed_t &placed, int i, board_t cells,
+                   bool crosses, bool transposed) {
     while (cells) {
       int j = std::countr_zero(cells);
       std::pair<int, int> coords{(transposed ? j : i), (transposed ? i : j)};
@@ -260,12 +272,13 @@ private:
     const auto check = [&g, &placed, &free](const int i, const board_t cells,
                                             const board_t mask,
                                             const bool transposed) {
-      board_t naughts{free(cells, mask)};
       board_t crosses{free(~cells & mask, mask)};
+      board_t naughts{free(cells, mask)};
+      crosses &= ~(naughts & crosses);
       if (crosses)
-        markPairs(g, placed, i, crosses, true, transposed);
+        mark(g, placed, i, crosses, true, transposed);
       if (naughts)
-        markPairs(g, placed, i, naughts, false, transposed);
+        mark(g, placed, i, naughts, false, transposed);
       return static_cast<bool>(crosses | naughts);
     };
     for (int i{0}; i < g.size(); ++i) {
@@ -294,12 +307,12 @@ private:
     const auto check = [&g, &placed, &free](const int i, const board_t cells,
                                             const board_t mask,
                                             const bool transposed) {
-      board_t naughts{free(cells, mask)};
       board_t crosses{free(~cells & mask, mask)};
+      board_t naughts{free(cells, mask)};
       if (crosses)
-        markPairs(g, placed, i, crosses, true, transposed);
+        mark(g, placed, i, crosses, true, transposed);
       if (naughts)
-        markPairs(g, placed, i, naughts, false, transposed);
+        mark(g, placed, i, naughts, false, transposed);
       return static_cast<bool>(crosses | naughts);
     };
     for (int i{0}; i < g.size(); ++i) {
@@ -311,7 +324,109 @@ private:
     return progress;
   }
 
-  static constexpr std::array rules{&adjacentPairs, &seperatedPairs};
+  static bool fullLine(Game &g, placed_t &placed) {
+    bool progress{false};
+    const board_t boardMask{g.boardMask()};
+    const auto check = [&g, &placed,
+                        boardMask](const int i, const board_t cells,
+                                   const board_t mask, const bool transposed) {
+      int half = {static_cast<int>(std::ceil(g.size() / 2.0))};
+      int nCrosses{std::popcount(cells)};
+      int nNaughts{std::popcount(mask) - nCrosses};
+      board_t crosses{(nNaughts == half) ? ~mask & boardMask : 0};
+      board_t naughts{(nCrosses == half) ? ~mask & boardMask : 0};
+      if (crosses)
+        mark(g, placed, i, crosses, true, transposed);
+      if (naughts)
+        mark(g, placed, i, naughts, false, transposed);
+      return static_cast<bool>(crosses | naughts);
+    };
+    for (int i{0}; i < g.size(); ++i) {
+      const bool row{check(i, g.rowCells(i), g.rowMask(i), false)};
+      const bool column{check(i, g.columnCells(i), g.columnMask(i), true)};
+      if (row || column)
+        progress = true;
+    }
+    return progress;
+  }
+
+  struct CellBlock {
+    int n{};
+    int crosses{};
+    int naughts{};
+  };
+
+  static bool requiredCells(Game &g, placed_t &placed) {
+    bool progress{false};
+    const board_t boardMask{g.boardMask()};
+
+    const auto countRequired = [](int n, int crossEnds, int naughtEnds) {
+      return CellBlock{n, (n + naughtEnds) / 3, (n + crossEnds) / 3};
+    };
+    const auto check = [&g, &placed, &countRequired,
+                        boardMask](const int i, const board_t cells,
+                                   const board_t mask, const bool transposed) {
+      if (g.isRowComplete(cells, mask))
+        return false;
+      int half = {static_cast<int>(std::ceil(g.size() / 2.0))};
+      std::pair<int, int> count{std::popcount(cells),
+                                std::popcount(~cells & mask)};
+      board_t gaps{mask | ~boardMask};
+      std::vector<std::pair<int, CellBlock>> blocks{};
+      while (gaps) {
+        int skip{std::countr_one(gaps)};
+        if (skip > 0) {
+          gaps >>= skip;
+          continue;
+        }
+        int n{std::countr_zero(gaps)};
+        int p{std::countl_zero(gaps)};
+        int l{static_cast<int>(p == 0 ? -1 : (cells >> (p - 1)) & 1)};
+        int r{
+            static_cast<int>(p + 1 == g.size() ? -1 : (cells >> (p + n)) & 1)};
+        auto required{countRequired(n, (l == 1 ? 1 : 0) + (r == 1 ? 1 : 0),
+                                    (l == 0 ? 1 : 0) + (r == 0 ? 1 : 0))};
+        count.first += required.crosses;
+        count.second += required.naughts;
+
+        blocks.push_back({p, required});
+        gaps >>= n;
+      }
+      board_t crosses{};
+      board_t naughts{};
+
+      if (count.first == half) {
+        for (auto b : blocks) {
+          if (b.second.crosses == 0) {
+            naughts |= ((board_t{1} << b.second.n) - 1) << b.first;
+          }
+        }
+      } else if (count.second == half) {
+        for (auto b : blocks) {
+          if (b.second.naughts == 0) {
+            crosses |= ((board_t{1} << b.second.n) - 1) << b.first;
+          }
+        }
+      } else
+        return false;
+
+      if (crosses)
+        mark(g, placed, i, crosses, true, transposed);
+      if (naughts)
+        mark(g, placed, i, naughts, false, transposed);
+      return static_cast<bool>(crosses | naughts);
+    };
+    for (int i{0}; i < g.size(); ++i) {
+      const bool row{check(i, g.rowCells(i), g.rowMask(i), false)};
+      const bool column{check(i, g.columnCells(i), g.columnMask(i), true)};
+      if (row || column)
+        progress = true;
+    }
+    return progress;
+  }
+
+  static constexpr std::array rules{&adjacentPairs, &seperatedPairs, &fullLine,
+                                    &requiredCells};
 };
 
 class HybridSolver {
@@ -334,45 +449,47 @@ private:
       return false;
     if (g.isWon())
       return true;
-    placed_t placed{m_ds.deduce(g)};
-    if (g.isWon())
-      return true;
 
-    const board_t boardMask{g.boardMask()};
-    std::pair<int, int> rMin{-1, g.size() + 1};
-    for (int r{0}; r < g.size(); ++r) {
-      int count{std::popcount(g.rowMask(r))};
-      if (count == 0)
-        continue;
-      if (rMin.second > count)
-        rMin = {r, count};
+    auto result{m_ds.deduce(g)};
+
+    if (result.first == DeductiveSolver::Status::Success)
+      return true;
+    if (result.first == DeductiveSolver::Status::Stuck) {
+      const board_t boardMask{g.boardMask()};
+      std::pair<int, int> rMin{-1, g.size() + 1};
+      for (int r{0}; r < g.size(); ++r) {
+        int count{std::popcount(g.rowMask(r))};
+        if (count == 0)
+          continue;
+        if (rMin.second > count)
+          rMin = {r, count};
+      }
+      board_t freeColumns{~g.rowMask(rMin.first) & boardMask};
+      std::pair<int, int> cMin{-1, g.size() + 1};
+      while (freeColumns) {
+        int c{std::countr_zero(freeColumns)};
+        int count{std::popcount(g.rowMask(c))};
+        if (cMin.second > count)
+          cMin = {c, count};
+        freeColumns &= freeColumns - 1;
+      }
+
+      int nCrosses{std::popcount(g.rowCells(rMin.first)) +
+                   std::popcount(g.columnCells(cMin.first))};
+      bool crosses{nCrosses <= rMin.second + cMin.second};
+      g.place(rMin.first, cMin.first, crosses);
+      ++m_calls;
+      if (backtrack(g))
+        return true;
+      g.unPlace(rMin.first, cMin.first);
+      g.place(rMin.first, cMin.first, !crosses);
+      ++m_calls;
+      if (backtrack(g))
+        return true;
+      g.unPlace(rMin.first, cMin.first);
     }
-    board_t freeColumns{~g.rowMask(rMin.first) & boardMask};
-    std::pair<int, int> cMin{-1, g.size() + 1};
-    while (freeColumns) {
-      int c{std::countr_zero(freeColumns)};
-      int count{std::popcount(g.rowMask(c))};
-      if (cMin.second > count)
-        cMin = {c, count};
-      freeColumns &= freeColumns - 1;
-    }
 
-    int nCrosses{std::popcount(g.rowCells(rMin.first)) +
-                 std::popcount(g.columnCells(cMin.first))};
-    bool crosses{nCrosses <= rMin.second + cMin.second};
-
-    g.place(rMin.first, cMin.first, crosses);
-    ++m_calls;
-    if (backtrack(g))
-      return true;
-    g.unPlace(rMin.first, cMin.first);
-    g.place(rMin.first, cMin.first, !crosses);
-    ++m_calls;
-    if (backtrack(g))
-      return true;
-    g.unPlace(rMin.first, cMin.first);
-
-    for (auto p : placed) {
+    for (auto p : result.second) {
       g.unPlace(p.first, p.second);
     }
 
@@ -396,10 +513,10 @@ int main(int argc, char const *argv[]) {
 
   std::cout << g1 << '\n';
 
-  BacktrackSolver bs{};
-  std::cout << "BacktrackSolver: " << std::boolalpha << bs.solve(g1)
-            << "\nCalls: " << bs.calls() << '\n'
-            << g1 << '\n';
+  // BacktrackSolver bs{};
+  // std::cout << "BacktrackSolver: " << std::boolalpha << bs.solve(g1)
+  //           << "\nCalls: " << bs.calls() << '\n'
+  //           << g1 << '\n';
 
   HybridSolver hs{};
   std::cout << "HybridSolver: " << std::boolalpha << hs.solve(g2)
