@@ -64,6 +64,8 @@ public:
     }
   }
 
+  explicit Game(int size) : m_size{size} {}
+
   bool isRowValid(board_t row) const {
     return !((row & row >> 1 & row >> 2) || std::popcount(row) > m_size / 2);
   }
@@ -74,7 +76,7 @@ public:
   }
 
   bool canPlace(int r, int c) const {
-    if (r >= m_size || c >= m_size)
+    if (r < 0 || m_size <= r || c < 0 || m_size <= c)
       return false;
     return !(m_mask[r] & column(c));
   }
@@ -176,6 +178,8 @@ private:
   int m_calls{};
 
   bool backtrack(Game &g, int r, int c) {
+    if (m_calls >= 1'000'000)
+      return false;
     if (c >= g.size()) {
       c = 0;
       ++r;
@@ -232,7 +236,7 @@ private:
                         bool crosses, bool transposed) {
     while (cells) {
       int j = std::countr_zero(cells);
-      std::pair<int, int> coords{(transposed ? i : j), (transposed ? j : i)};
+      std::pair<int, int> coords{(transposed ? j : i), (transposed ? i : j)};
       g.place(coords.first, coords.second, crosses);
       placed.push_back(coords);
       cells &= cells - 1;
@@ -243,11 +247,11 @@ private:
     bool progress{false};
     const board_t boardMask{g.boardMask()};
     const auto freeLeft = [boardMask](const board_t cells, const board_t mask) {
-      return (cells & (cells << 1) << 1) & ~mask & boardMask;
+      return ((cells & (cells << 1)) << 1) & ~mask & boardMask;
     };
     const auto freeRight = [boardMask](const board_t cells,
                                        const board_t mask) {
-      return (cells & (cells >> 1) >> 1) & ~mask & boardMask;
+      return ((cells & (cells >> 1)) >> 1) & ~mask & boardMask;
     };
     const auto free = [&freeLeft, &freeRight](const board_t cells,
                                               const board_t mask) {
@@ -256,15 +260,14 @@ private:
     const auto check = [&g, &placed, &free](const int i, const board_t cells,
                                             const board_t mask,
                                             const bool transposed) {
-      board_t crosses{free(cells, mask)};
-      board_t naughts{free(~cells & mask, mask)};
+      board_t naughts{free(cells, mask)};
+      board_t crosses{free(~cells & mask, mask)};
       if (crosses)
         markPairs(g, placed, i, crosses, true, transposed);
       if (naughts)
         markPairs(g, placed, i, naughts, false, transposed);
       return static_cast<bool>(crosses | naughts);
     };
-
     for (int i{0}; i < g.size(); ++i) {
       const bool row{check(i, g.rowCells(i), g.rowMask(i), false)};
       const bool column{check(i, g.columnCells(i), g.columnMask(i), true)};
@@ -274,7 +277,41 @@ private:
     return progress;
   }
 
-  static constexpr std::array rules{&adjacentPairs};
+  static bool seperatedPairs(Game &g, placed_t &placed) {
+    bool progress{false};
+    const board_t boardMask{g.boardMask()};
+    const auto freeLeft = [boardMask](const board_t cells, const board_t mask) {
+      return ((cells & (cells << 2)) >> 1) & ~mask & boardMask;
+    };
+    const auto freeRight = [boardMask](const board_t cells,
+                                       const board_t mask) {
+      return ((cells & (cells << 2)) >> 1) & ~mask & boardMask;
+    };
+    const auto free = [&freeLeft, &freeRight](const board_t cells,
+                                              const board_t mask) {
+      return freeLeft(cells, mask) | freeRight(cells, mask);
+    };
+    const auto check = [&g, &placed, &free](const int i, const board_t cells,
+                                            const board_t mask,
+                                            const bool transposed) {
+      board_t naughts{free(cells, mask)};
+      board_t crosses{free(~cells & mask, mask)};
+      if (crosses)
+        markPairs(g, placed, i, crosses, true, transposed);
+      if (naughts)
+        markPairs(g, placed, i, naughts, false, transposed);
+      return static_cast<bool>(crosses | naughts);
+    };
+    for (int i{0}; i < g.size(); ++i) {
+      const bool row{check(i, g.rowCells(i), g.rowMask(i), false)};
+      const bool column{check(i, g.columnCells(i), g.columnMask(i), true)};
+      if (row || column)
+        progress = true;
+    }
+    return progress;
+  }
+
+  static constexpr std::array rules{&adjacentPairs, &seperatedPairs};
 };
 
 class HybridSolver {
@@ -293,16 +330,21 @@ private:
   int m_calls{};
 
   bool backtrack(Game &g) {
+    if (!g.isValid())
+      return false;
     if (g.isWon())
       return true;
     placed_t placed{m_ds.deduce(g)};
     if (g.isWon())
       return true;
+
     const board_t boardMask{g.boardMask()};
     std::pair<int, int> rMin{-1, g.size() + 1};
     for (int r{0}; r < g.size(); ++r) {
       int count{std::popcount(g.rowMask(r))};
-      if (rMin.second < count)
+      if (count == 0)
+        continue;
+      if (rMin.second > count)
         rMin = {r, count};
     }
     board_t freeColumns{~g.rowMask(rMin.first) & boardMask};
@@ -317,7 +359,7 @@ private:
 
     int nCrosses{std::popcount(g.rowCells(rMin.first)) +
                  std::popcount(g.columnCells(cMin.first))};
-    bool crosses{nCrosses >= rMin.second + cMin.second};
+    bool crosses{nCrosses <= rMin.second + cMin.second};
 
     g.place(rMin.first, cMin.first, crosses);
     ++m_calls;
@@ -348,11 +390,21 @@ int main(int argc, char const *argv[]) {
     std::cerr << "File " << argv[1] << " does not exist\n";
     return 1;
   }
-  Game g{file};
+
+  Game g1{file};
+  Game g2{g1};
+
+  std::cout << g1 << '\n';
+
   BacktrackSolver bs{};
-  std::cout << g << '\n';
-  std::cout << std::boolalpha << bs.solve(g) << "\nCalls: " << bs.calls()
-            << '\n'
-            << g << '\n';
+  std::cout << "BacktrackSolver: " << std::boolalpha << bs.solve(g1)
+            << "\nCalls: " << bs.calls() << '\n'
+            << g1 << '\n';
+
+  HybridSolver hs{};
+  std::cout << "HybridSolver: " << std::boolalpha << hs.solve(g2)
+            << "\nCalls: " << hs.calls() << '\n'
+            << g2 << '\n';
+
   return 0;
 }
