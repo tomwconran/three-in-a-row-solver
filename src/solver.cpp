@@ -429,6 +429,9 @@ private:
               crosses |= m << b.first;
             } else if (b.second.crossEnds == 1 && (b.second.n + 2) % 3 == 0) {
               crosses |= (m >> (b.second.rCell == 1 ? 1 : 0)) << b.first;
+            } else if (b.second.crossEnds == 1 && b.second.naughtEnds == 1 &&
+                       b.second.n % 3 == 0) {
+              crosses |= (m >> (b.second.lCell == 1 ? 0 : 2)) << b.first;
             }
           }
         }
@@ -447,6 +450,9 @@ private:
               naughts |= m << b.first;
             } else if (b.second.naughtEnds == 1 && (b.second.n + 2) % 3 == 0) {
               naughts |= (m >> (b.second.rCell == 0 ? 1 : 0)) << b.first;
+            } else if (b.second.naughtEnds == 1 && b.second.crossEnds == 1 &&
+                       b.second.n % 3 == 0) {
+              naughts |= (m >> (b.second.lCell == 0 ? 0 : 2)) << b.first;
             }
           }
         }
