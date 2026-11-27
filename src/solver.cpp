@@ -435,14 +435,14 @@ private:
       } else if (count.second == half) {
         bool placed{false};
         for (auto b : blocks) {
-          placed = true;
           if (b.second.naughts == 0) {
+            placed = true;
             crosses |= ((board_t{1} << b.second.n) - 1) << b.first;
           }
         }
         if (!placed) {
           for (auto b : blocks) {
-            board_t m{perfectMask(b.second.crosses)};
+            board_t m{perfectMask(b.second.naughts)};
             if (b.second.naughtEnds == 2 && (b.second.n + 1) % 3 == 0) {
               naughts |= m << b.first;
             } else if (b.second.naughtEnds == 1 && (b.second.n + 2) % 3 == 0) {
