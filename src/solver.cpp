@@ -1,7 +1,5 @@
-#include <algorithm>
 #include <array>
 #include <bit>
-#include <bitset>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -557,31 +555,40 @@ int main(int argc, char const *argv[]) {
     return 1;
   }
 
-  Game g1{file};
-  Game g2{g1};
+  constexpr int nWarmup{1'000};
+  constexpr int nTests{1'000'000};
 
-  std::cout << g1 << '\n';
-
-  // BacktrackSolver bs{};
-  // std::cout << "BacktrackSolver: " << std::boolalpha << bs.solve(g1)
-  //           << "\nCalls: " << bs.calls() << '\n'
-  //           << g1 << '\n';
-
-  DeductiveSolver ds{};
-  ds.deduce(g1);
-  std::cout << g1 << '\n';
-  auto start = std::chrono::steady_clock::now();
+  Game g{file};
   HybridSolver hs{};
-  std::cout << "HybridSolver: " << std::boolalpha << hs.solve(g2)
-            << "\nCalls: " << hs.calls() << '\n'
-            << g2 << '\n';
 
+  std::cout << g << '\n';
+
+  std::vector<Game> games{};
+  games.reserve(nTests + nWarmup);
+  for (int i{0}; i < nTests + nWarmup; ++i) {
+    games.push_back({g});
+  }
+
+  for (int i{0}; i < nWarmup; ++i) {
+    hs.solve(games[i]);
+  }
+
+  auto start = std::chrono::steady_clock::now();
+  for (int i{nWarmup}; i < nTests + nWarmup; ++i) {
+    hs.solve(games[i]);
+  }
   auto end = std::chrono::steady_clock::now();
-  std::cout << "Time: " << std::fixed << std::setprecision(6)
-            << std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-                       .count() /
-                   1'000'000.0
-            << "ms\n";
+  auto time{std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+                .count() /
+            1'000'000.0};
+
+  hs.solve(g);
+
+  std::cout << g << '\n';
+
+  std::cout << "Tests: " << nTests << "\nTotal Time: " << time
+            << "ms\nTime per puzzle: " << std::fixed << std::setprecision(6)
+            << time / nTests << "ms\n";
 
   return 0;
 }
